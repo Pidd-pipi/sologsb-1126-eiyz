@@ -44,8 +44,9 @@ const siteOptions = computed(() =>
     .filter((s): s is typeof s & { id: number } => typeof s.id === 'number')
     .map((s) => ({
       value: s.id,
-      label: `${s.code} · ${s.name}（${s.campName}）`,
-      vetoed: uiStore.isVetoed(s.id)
+      label: `${s.code} · ${s.name}（${s.campName}）${siteStore.isClosed(s.id) ? '［封营中］' : ''}`,
+      vetoed: uiStore.isVetoed(s.id),
+      closed: siteStore.isClosed(s.id)
     }))
 )
 
@@ -71,7 +72,8 @@ const vetoLedger = computed(() =>
         siteName: site?.name ?? '营位已删除',
         campName: site?.campName ?? '—',
         grade: row?.grade ?? 'C',
-        total: row?.total ?? 0
+        total: row?.total ?? 0,
+        closed: siteStore.isClosed(v.siteId)
       }
     })
     .sort((a, b) => (a.judgedAt < b.judgedAt ? 1 : -1))
@@ -164,6 +166,9 @@ function focusSite(id: number | undefined): void {
                 :value="opt.value"
               >
                 <span>{{ opt.label }}</span>
+                <el-tag v-if="opt.closed" type="warning" size="small" style="float: right" class="mr6">
+                  封营中
+                </el-tag>
                 <el-tag v-if="opt.vetoed" type="danger" size="small" style="float: right">
                   已否决
                 </el-tag>
@@ -298,9 +303,10 @@ function focusSite(id: number | undefined): void {
         <el-table-column label="判定日期" width="112">
           <template #default="{ row }">{{ formatDate(row.judgedAt) }}</template>
         </el-table-column>
-        <el-table-column label="当前等级" width="170">
+        <el-table-column label="当前等级" width="220">
           <template #default="{ row }">
             <GradeBadge :grade="row.grade" :score="row.total" vetoed size="small" :show-label="false" />
+            <el-tag v-if="row.closed" type="warning" size="small" class="ml6">封营中·留存</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
@@ -369,5 +375,8 @@ function focusSite(id: number | undefined): void {
 }
 .mr6 {
   margin-right: 6px;
+}
+.ml6 {
+  margin-left: 6px;
 }
 </style>

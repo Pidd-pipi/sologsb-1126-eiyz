@@ -21,6 +21,8 @@ const props = withDefaults(
     selectedId?: number | null
     /** 每个营位的等级，用于着色 */
     gradeOf?: (siteId: number) => Grade
+    /** 封营中的营位判定；封营标记灰色「封」徽标，不使用推荐等级色 */
+    closedOf?: (siteId: number) => boolean
     /** pick 模式下点击空白处会抛出经纬度（用于选点登记） */
     mode?: 'view' | 'pick'
     /** 地图高度 */
@@ -31,6 +33,7 @@ const props = withDefaults(
   {
     selectedId: null,
     gradeOf: undefined,
+    closedOf: undefined,
     mode: 'view',
     height: '420px',
     title: '营位分布'
@@ -58,8 +61,17 @@ const bounds = computed(() => boundsOf(props.sites.map((s) => ({ lng: s.lng, lat
 const points = computed(() =>
   props.sites.map((site) => {
     const pt = projectToGrid({ lng: site.lng, lat: site.lat }, bounds.value, GRID_W, GRID_H)
+    const closed = props.closedOf ? props.closedOf(site.id ?? -1) : false
     const grade: Grade = props.gradeOf ? props.gradeOf(site.id ?? -1) : 'C'
-    return { site, x: pt.x, y: pt.y, color: GRADE_COLOR[grade], grade }
+    // 封营中不按推荐等级着色，统一灰色并以「封」字提示
+    return {
+      site,
+      x: pt.x,
+      y: pt.y,
+      color: closed ? '#8a8f8c' : GRADE_COLOR[grade],
+      grade,
+      closed
+    }
   })
 )
 
@@ -107,10 +119,11 @@ function renderAmapMarkers(): void {
   markers = []
   if (props.sites.length === 0) return
   for (const item of points.value) {
+    const badge = item.closed ? '封' : item.grade
     const marker = new ns.Marker({
       position: [item.site.lng, item.site.lat],
-      title: `${item.site.code} ${item.site.name}`,
-      content: `<div class="gb-amap-pin" style="--pin:${item.color}"><span>${item.site.code.slice(-2)}</span><em>${item.grade}</em></div>`,
+      title: item.closed ? `${item.site.code} ${item.site.name}（封营中）` : `${item.site.code} ${item.site.name}`,
+      content: `<div class="gb-amap-pin${item.closed ? ' is-closed' : ''}" style="--pin:${item.color}"><span>${item.closed ? '封' : item.site.code.slice(-2)}</span><em>${badge}</em></div>`,
       offset: new ns.Pixel(-16, -16)
     })
     marker.on('click', () => emit('select', item.site.id as number))
@@ -160,7 +173,10 @@ watch(
 )
 
 watch(
-  () => props.sites.map((s) => `${s.id}:${s.lng}:${s.lat}`).join('|'),
+  () =>
+    props.sites
+      .map((s) => `${s.id}:${s.lng}:${s.lat}:${props.closedOf ? Number(props.closedOf(s.id ?? -1)) : 0}`)
+      .join('|'),
   () => {
     if (amap.value && !degraded.value) renderAmapMarkers()
   }
@@ -246,16 +262,16 @@ onBeforeUnmount(() => {
           v-for="pt in points"
           :key="`pt-${pt.site.id}`"
           class="map-panel__node"
-          :class="{ 'is-active': pt.site.id === selectedId }"
+          :class="{ 'is-active': pt.site.id === selectedId, 'is-closed': pt.closed }"
           tabindex="0"
           role="button"
-          :aria-label="`${pt.site.code} ${pt.site.name}`"
+          :aria-label="`${pt.site.code} ${pt.site.name}${pt.closed ? '（封营中）' : ''}`"
           @click.stop="emit('select', pt.site.id as number)"
         >
           <circle :cx="pt.x" :cy="pt.y" r="16" :fill="pt.color" opacity="0.16" />
           <circle :cx="pt.x" :cy="pt.y" r="9" :fill="pt.color" stroke="#ffffff" stroke-width="2" />
           <text :x="pt.x" :y="pt.y + 3.5" text-anchor="middle" class="map-panel__nodeText">
-            {{ pt.grade }}
+            {{ pt.closed ? '封' : pt.grade }}
           </text>
           <text :x="pt.x + 14" :y="pt.y - 10" class="map-panel__nodeLabel">
             {{ pt.site.code }}
@@ -377,6 +393,9 @@ onBeforeUnmount(() => {
   stroke: #14532d;
   stroke-width: 3;
 }
+.map-panel__node.is-closed circle:nth-child(2) {
+  stroke-dasharray: 3 2;
+}
 .map-panel__legend {
   position: absolute;
   top: 10px;
@@ -493,6 +512,10 @@ onBeforeUnmount(() => {
 .gb-amap-pin em {
   transform: rotate(45deg);
   font-style: normal;
+}
+.gb-amap-pin.is-closed {
+  border-style: dashed;
+  box-shadow: 0 2px 6px rgba(80, 86, 82, 0.35);
 }
 .gb-amap-pin em {
   position: absolute;

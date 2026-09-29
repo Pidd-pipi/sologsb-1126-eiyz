@@ -42,7 +42,9 @@ const { ranked } = useRanking({
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
   thresholds: () => profileStore.activeProfile?.thresholds ?? { gradeA: 78, gradeB: 58 },
-  vetoedIds: () => uiStore.vetoedSiteIds
+  vetoedIds: () => uiStore.vetoedSiteIds,
+  // 封营中的营位不进入推荐、名次、最高分与等级统计
+  excludedIds: () => siteStore.closedSiteIds
 })
 
 const factorMetaOf = (key: string) => FACTOR_META.find((m) => m.key === key)
@@ -66,6 +68,7 @@ const stats = computed(() => {
     total: rows.length,
     gradeA: rows.filter((r) => r.grade === 'A').length,
     vetoed: rows.filter((r) => r.vetoed).length,
+    closed: siteStore.closedCount,
     top: rows[0]?.total ?? 0,
     topName: rows[0] ? `${rows[0].site.code} ${rows[0].site.name}` : '—'
   }
@@ -93,17 +96,38 @@ function openDetail(siteId: number | undefined): void {
         </p>
       </div>
       <div class="page-actions">
+        <el-button @click="router.push('/closures')">封营台账</el-button>
         <el-button @click="router.push('/scoring')">调权重</el-button>
         <el-button @click="router.push('/map')">看地图</el-button>
         <el-button type="primary" @click="router.push('/sites/new')">新增营位</el-button>
       </div>
     </div>
 
+    <el-alert
+      v-if="stats.closed"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="closed-alert"
+      :title="`有 ${stats.closed} 个营位封营中，未计入下列推荐、最高分与等级统计`"
+    >
+      <template #default>
+        <div class="closed-alert__row">
+          <span>
+            封营营位的历史得分、因子与否决记录仍可在封营台账或营位详情查看，恢复开放后立即重新参与排名。
+          </span>
+          <el-button size="small" text type="primary" @click="router.push('/closures')">
+            前往封营台账
+          </el-button>
+        </div>
+      </template>
+    </el-alert>
+
     <div class="stat-row">
       <div class="stat-card">
         <div class="stat-card__label">候选营位</div>
         <div class="stat-card__value" data-testid="stat-total">{{ stats.total }}</div>
-        <div class="stat-card__extra">共 {{ siteStore.total }} 个已登记</div>
+        <div class="stat-card__extra">共 {{ siteStore.total }} 个已登记（封营 {{ stats.closed }}）</div>
       </div>
       <div class="stat-card">
         <div class="stat-card__label">A 级推荐</div>
@@ -116,6 +140,13 @@ function openDetail(siteId: number | undefined): void {
           {{ stats.vetoed }}
         </div>
         <div class="stat-card__extra">否决后禁止评 A</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card__label">封营中</div>
+        <div class="stat-card__value" :style="{ color: stats.closed ? '#b45309' : undefined }">
+          {{ stats.closed }}
+        </div>
+        <div class="stat-card__extra">恢复后立即重新排名</div>
       </div>
       <div class="stat-card">
         <div class="stat-card__label">最高综合得分</div>
@@ -267,6 +298,15 @@ function openDetail(siteId: number | undefined): void {
 </template>
 
 <style scoped>
+.closed-alert {
+  margin-bottom: 12px;
+}
+.closed-alert__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 .rank-no {
   display: inline-flex;
   align-items: center;

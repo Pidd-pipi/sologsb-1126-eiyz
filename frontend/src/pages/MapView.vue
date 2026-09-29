@@ -32,10 +32,13 @@ const panelReason = ref(reason.value)
 const filterSurface = ref<string>('')
 const gradeFilter = ref<string>('')
 const selectedId = ref<number | null>(null)
+/** 封营营位默认不画在推荐地图上，勾选后以灰色「封」标记单独显示 */
+const showClosed = ref(false)
 
 const visibleSites = computed(() =>
   siteStore.list.filter((s) => {
     if (filterSurface.value && s.surface !== filterSurface.value) return false
+    if (!showClosed.value && s.id != null && siteStore.isClosed(s.id)) return false
     return true
   })
 )
@@ -46,12 +49,15 @@ const { ranked, scoreOf } = useRanking({
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
   thresholds: () => profileStore.activeProfile?.thresholds ?? { gradeA: 78, gradeB: 58 },
-  vetoedIds: () => uiStore.vetoedSiteIds
+  vetoedIds: () => uiStore.vetoedSiteIds,
+  // 封营营位不参与最高分与 A/B/C 等级统计
+  excludedIds: () => siteStore.closedSiteIds
 })
 
 const panelSites = computed(() =>
   visibleSites.value.filter((s) => {
     if (!gradeFilter.value) return true
+    if (s.id != null && siteStore.isClosed(s.id)) return false
     const grade = s.id != null ? scoreOf(s.id)?.grade : undefined
     return grade === gradeFilter.value
   })
@@ -66,6 +72,9 @@ const selectedRow = computed(() =>
 )
 
 const selectedVetos = computed(() => uiStore.vetosOf(selectedId.value))
+const selectedClosure = computed(() =>
+  selectedId.value == null ? null : siteStore.activeClosureOf(selectedId.value)
+)
 
 /** 选中营位到最近营位的距离，作为现场通行参考 */
 const nearest = computed(() => {
@@ -91,6 +100,10 @@ function gradeOfSite(id: number): Grade {
   return scoreOf(id)?.grade ?? 'C'
 }
 
+function isSiteClosed(id: number): boolean {
+  return siteStore.isClosed(id)
+}
+
 function selectSite(id: number): void {
   selectedId.value = id
   uiStore.focusedSiteId = id
@@ -113,10 +126,11 @@ const gradeStats = computed(() => {
         <h1>营位地图</h1>
         <p>
           按推荐等级给营位标记着色，命中风险否决项的营位以红点提示；
-          点击任一标记可查看该营位的得分构成、因子实测与否决记录。
+          封营中的营位不参与推荐与等级统计，默认不在图上显示，可勾选后以灰色「封」标记查看。
         </p>
       </div>
       <div class="page-actions">
+        <el-button @click="router.push('/closures')">封营台账</el-button>
         <el-button @click="router.push('/')">返回名次表</el-button>
         <el-button type="primary" @click="router.push('/sites/new')">新增营位</el-button>
       </div>
@@ -142,7 +156,14 @@ const gradeStats = computed(() => {
       <div v-for="g in gradeStats" :key="g.grade" class="stat-card">
         <div class="stat-card__label">{{ g.grade }} 级营位</div>
         <div class="stat-card__value" :style="{ color: g.color }">{{ g.count }}</div>
-        <div class="stat-card__extra">共 {{ ranked.length }} 个候选营位</div>
+        <div class="stat-card__extra">在营 {{ ranked.length }} 个 · 不含封营</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card__label">封营中</div>
+        <div class="stat-card__value" :style="{ color: siteStore.closedCount ? '#b45309' : undefined }">
+          {{ siteStore.closedCount }}
+        </div>
+        <div class="stat-card__extra">不参与等级统计</div>
       </div>
       <div class="stat-card">
         <div class="stat-card__label">否决标记</div>
@@ -171,12 +192,14 @@ const gradeStats = computed(() => {
           <el-radio-button value="B">B 级</el-radio-button>
           <el-radio-button value="C">C 级</el-radio-button>
         </el-radio-group>
+        <el-checkbox v-model="showClosed">显示封营营位（灰色「封」标记）</el-checkbox>
         <el-button
           text
           @click="
             () => {
               filterSurface = ''
               gradeFilter = ''
+              showClosed = false
             }
           "
         >
@@ -190,6 +213,7 @@ const gradeStats = computed(() => {
       :sites="panelSites"
       :selected-id="selectedId"
       :grade-of="gradeOfSite"
+      :closed-of="isSiteClosed"
       height="460px"
       title="营位分布与等级着色"
       @select="selectSite"
@@ -209,11 +233,16 @@ const gradeStats = computed(() => {
     <section v-if="selectedSite" class="panel">
       <div class="panel__head">
         <h2>{{ selectedSite.code }} · {{ selectedSite.name }}</h2>
-        <GradeBadge
-          :grade="selectedRow?.grade ?? 'C'"
-          :score="selectedRow?.total"
-          :vetoed="selectedVetos.length > 0"
-        />
+        <div class="head-badges">
+          <el-tag v-if="selectedClosure" type="warning" size="small">
+            封营中 · 计划 {{ formatDate(selectedClosure.plannedReopenAt) }} 恢复
+          </el-tag>
+          <GradeBadge
+            :grade="selectedRow?.grade ?? 'C'"
+            :score="selectedRow?.total"
+            :vetoed="selectedVetos.length > 0"
+          />
+        </div>
       </div>
       <div class="detail-grid">
         <div class="detail-item">
@@ -256,6 +285,13 @@ const gradeStats = computed(() => {
         </div>
       </div>
       <p v-if="selectedSite.note" class="panel__hint">现场备注：{{ selectedSite.note }}</p>
+      <div v-if="selectedClosure" class="closure-block">
+        <el-tag type="warning" size="small" class="mr6">{{ selectedClosure.reason }}</el-tag>
+        <span class="weight-note">
+          {{ selectedClosure.detail }} ｜ 封营 {{ formatDate(selectedClosure.closedAt) }} ·
+          {{ selectedClosure.closedBy }}，封营期间不参与推荐与统计，历史得分/因子仍可查看。
+        </span>
+      </div>
       <div v-if="selectedVetos.length" class="veto-block">
         <el-tag v-for="v in selectedVetos" :key="v.id" type="danger" size="small" class="mr6">
           {{ v.type }}
@@ -307,6 +343,22 @@ const gradeStats = computed(() => {
   gap: 6px;
   flex-wrap: wrap;
   margin-top: 10px;
+}
+.closure-block {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: #fdf6ec;
+  border: 1px solid #f5dab1;
+  border-radius: 8px;
+}
+.head-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .mr6 {
   margin-right: 6px;

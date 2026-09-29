@@ -41,31 +41,42 @@ docker compose down
 | FactorAssessment 因子评估 | `frontend/src/types/factor.ts` | 所属营位、水源距离、风向与风力等级、信号强度、日照时长、落石落枝风险、植被遮蔽度、离车距离、离步道距离、评估人、评估日期 |
 | ScoreProfile 权重方案 | `frontend/src/types/score.ts` | 方案名、各因子权重（0-100）、归一化方式（极差归一 / 阈值分段）、A/B/C 等级阈值、适用季节、是否启用 |
 | RiskVeto 风险否决项 | `frontend/src/types/veto.ts` | 营位 id、否决类型（河道内 / 山洪沟 / 孤树下 / 崖底落石区 / 陡坡）、说明、判定人、判定日期 |
+| SiteClosure 封营记录 | `frontend/src/types/closure.ts` | 营位 id、封营原因（雨季封闭 / 护坡检修等）、说明、封营日期、计划恢复日期、实际恢复日期与说明、操作 / 恢复确认人 |
 
 ### IndexedDB 版本与升级迁移
 
-库名 `gbcampsite-db`（Dexie），共 4 张表：`sites`、`factors`、`profiles`、`vetos`。
+库名 `gbcampsite-db`（Dexie），共 5 张表：`sites`、`factors`、`profiles`、`vetos`、`closures`。
 
 - **v1**：建立 `sites`（营位）与 `factors`（因子评估）两张表。
 - **v2**：新增 `profiles`（权重方案）表，并为 `factors` 补 `siteId` 索引，让「按营位取因子」走索引；同时为存量因子补齐 `shade`、`distanceToCar`、`distanceToTrail` 缺省值。
 - **v3**：新增 `vetos`（风险否决）表，并为存量营位回填 `defaultProfileId`（取当前启用方案的 id）与新增字段缺省值。
+- **v4**：新增 `closures`（封营记录）表。仅加表、不改动存量数据：没有封营记录的营位一律按开放处理（旧数据升级默认开放）。
 
 ## 四、页面与路由
 
 | 路由 | 页面 | 消费模型 |
 | --- | --- | --- |
-| `/` | 营位名次表（按综合得分降序，展示坡度、水源距离、信号与等级，可按营地/地表/进出方式筛选，命中否决项整行标红） | Campsite、FactorAssessment、RiskVeto |
+| `/` | 营位名次表（按综合得分降序，展示坡度、水源距离、信号与等级，可按营地/地表/进出方式筛选，命中否决项整行标红；**封营中营位不计入推荐、最高分与等级统计**） | Campsite、FactorAssessment、RiskVeto、SiteClosure |
 | `/sites/new` | 新增营位（地图点选或手填经纬度，录入海拔、坡度、坡向与容量，支持草稿保存） | Campsite、FactorAssessment |
-| `/sites/:id` | 营位详情（上部地图定位与基本信息，中部因子打分表，下部否决记录与多轮复核） | 四个模型 |
+| `/sites/:id` | 营位详情（上部地图定位与基本信息，中部因子打分表，下部否决记录、多轮复核与封营记录；可办理封营/提前恢复，封营期间仍可查看留存得分、因子与否决） | 五个模型 |
 | `/scoring` | 权重与评分（拖动各因子权重条，名次实时刷新，可另存为季节方案） | ScoreProfile、Campsite |
-| `/map` | 营位地图（高德 JS API 标记按等级着色，未配置 `VITE_AMAP_KEY` 时退化为本地 SVG 网格视图） | Campsite、RiskVeto |
+| `/map` | 营位地图（高德 JS API 标记按等级着色，未配置 `VITE_AMAP_KEY` 时退化为本地 SVG 网格视图；封营营位默认隐藏，可勾选以灰色「封」标记查看） | Campsite、RiskVeto、SiteClosure |
 | `/veto` | 风险否决登记（选营位与否决类型、填说明，提交后名次表与地图同步更新） | RiskVeto、Campsite |
+| `/closures` | 封营台账（封营营位的单独入口：查看按当前方案计算的留存得分、最近因子与否决，办理提前恢复；已恢复记录归档可追溯） | SiteClosure、Campsite、FactorAssessment、RiskVeto |
 
 ## 五、共享组件与 hooks / utils
 
 - 组件：`frontend/src/components/common/` 下的 `MapPanel.vue`（高德 + SVG 网格双模式）、`FactorScoreBar.vue`（原始值 / 归一化得分 / 权重占比）、`GradeBadge.vue`（A/B/C 等级与得分气泡）、`EmptyState.vue`（空态与新建入口）、`WeightEditor.vue`（权重条编辑器）
-- hooks：`frontend/src/hooks/useAmapLoader.ts`（按需注入高德 JS API，key 缺省或加载失败返回降级标记）、`useRanking.ts`（归一化得分与名次）、`useLocalDraft.ts`（表单草稿）
+- hooks：`frontend/src/hooks/useAmapLoader.ts`（按需注入高德 JS API，key 缺省或加载失败返回降级标记）、`useRanking.ts`（归一化得分与名次，支持 `excludedIds` 把封营营位排除在推荐 / 最高分 / 等级统计之外）、`useLocalDraft.ts`（表单草稿）
 - utils：`frontend/src/utils/score.ts`（极差归一、阈值分段、加权求和、等级阈值、否决短路）、`geo.ts`（经纬度距离与网格坐标换算）、`format.ts`（数值与日期格式化、流水编号）、`db.ts`（Dexie 封装与样例数据）、`draft.ts`（localStorage 草稿）
+
+### 封营（临时下架）规则
+
+- 雨季封闭、护坡检修等情况下，领队在**营位详情页**办理封营，填写封营原因、情况说明、操作人与**计划恢复日期**。
+- 封营期间营位**不进**名次表、地图标记（默认）、最高分与 A/B/C 等级统计；归一化也只在在营营位之间进行，避免拉偏分布。
+- 封营**不是**否决或删除：历史综合得分（按当前启用方案实时计算的留存视图）、全部因子评估与否决记录保留，可从**封营台账 `/closures`** 或营位详情单独查看；台账同时提示「逾期未恢复」（过了计划日期但未办理恢复时仍保持封闭，不自动开放）。
+- 现场条件具备时可**提前恢复**（登记恢复说明与确认人），恢复后立即按当前方案参与排名；旧数据无需迁移、升级后默认开放。
+- 营位被删除时，其封营资料随营位、因子、否决记录一并清除。
 
 ## 六、地图降级说明
 
@@ -89,11 +100,11 @@ sologsb-1126/
     ├── vite.config.ts
     ├── public/favicon.svg
     └── src/
-        ├── types/{campsite,factor,score,veto}.ts
+        ├── types/{campsite,factor,score,veto,closure}.ts
         ├── stores/{siteStore,profileStore,uiStore}.ts
         ├── components/common/{MapPanel,FactorScoreBar,GradeBadge,EmptyState,WeightEditor}.vue
         ├── hooks/{useAmapLoader,useRanking,useLocalDraft}.ts
-        ├── pages/{Ranking,SiteNew,SiteDetail,Scoring,MapView,Veto}.vue
+        ├── pages/{Ranking,SiteNew,SiteDetail,Scoring,MapView,Veto,Closures}.vue
         ├── router/index.ts
         ├── utils/{score,geo,format,db,draft}.ts
         ├── styles/main.css
@@ -103,6 +114,6 @@ sologsb-1126/
 
 ## 八、数据存储说明
 
-- 全部数据只存在浏览器本地：营位、因子评估、权重方案、否决记录存 **IndexedDB**（Dexie，库名 `gbcampsite-db`）。
+- 全部数据只存在浏览器本地：营位、因子评估、权重方案、否决记录与封营记录存 **IndexedDB**（Dexie，库名 `gbcampsite-db`）。
 - 表单草稿（新增营位、否决登记）存 **localStorage**，键前缀 `gbcampsite:draft:`，刷新或误关页面后可恢复。
 - 容器完全无状态：不使用数据库服务、不挂载命名卷，清除浏览器站点数据即回到首次运行的样例营地。

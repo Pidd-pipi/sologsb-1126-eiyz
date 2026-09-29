@@ -57,7 +57,9 @@ const { ranked, best } = useRanking({
   weights: () => uiStore.workingWeights,
   normalize: () => uiStore.workingNormalize,
   thresholds: () => uiStore.workingThresholds,
-  vetoedIds: () => uiStore.vetoedSiteIds
+  vetoedIds: () => uiStore.vetoedSiteIds,
+  // 封营营位不参与实时名次与等级分布
+  excludedIds: () => siteStore.closedSiteIds
 })
 
 const totalWeight = computed(() => weightSum(uiStore.workingWeights))
@@ -319,7 +321,10 @@ async function removeProfileRow(id: number | undefined): Promise<void> {
     <section class="panel">
       <div class="panel__head">
         <h2>实时名次（跟随权重刷新）</h2>
-        <span class="weight-note">共 {{ ranked.length }} 个营位</span>
+        <span class="weight-note">
+          共 {{ ranked.length }} 个营位
+          <template v-if="siteStore.closedCount"> · {{ siteStore.closedCount }} 个封营中已剔除</template>
+        </span>
       </div>
       <el-table :data="ranked" size="small" border stripe>
         <el-table-column label="名次" width="72" align="center">

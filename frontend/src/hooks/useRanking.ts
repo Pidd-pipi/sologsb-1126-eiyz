@@ -30,6 +30,8 @@ export interface RankingInput {
   thresholds: () => GradeThresholds
   /** 命中否决项的营位 id 集合 */
   vetoedIds: () => number[]
+  /** 暂不参与推荐的营位 id 集合（如封营中），不进归一化、名次、最高分与等级统计 */
+  excludedIds?: () => number[]
 }
 
 export interface RankingRow extends SiteScore {
@@ -57,8 +59,12 @@ export function useRanking(input: RankingInput): RankingState {
       const weights = input.weights()
       const thresholds = input.thresholds()
       const vetoSet = new Set(input.vetoedIds() ?? [])
+      const excludedSet = new Set(input.excludedIds ? input.excludedIds() : [])
 
-      const list = sites.filter((s): s is Campsite & { id: number } => typeof s.id === 'number')
+      const list = sites.filter(
+        (s): s is Campsite & { id: number } =>
+          typeof s.id === 'number' && !excludedSet.has(s.id)
+      )
 
       // 关键：极差归一必须**同批营位一起比较**，逐条归一的话单条样本跨度为零会全部得 100。
       // 因此先收集全部原始指标，一次性归一化，再回填到每个营位。

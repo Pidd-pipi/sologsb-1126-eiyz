@@ -22,6 +22,7 @@ const activeMenu = computed(() => {
   if (path.startsWith('/scoring')) return '/scoring'
   if (path.startsWith('/map')) return '/map'
   if (path.startsWith('/veto')) return '/veto'
+  if (path.startsWith('/closures')) return '/closures'
   return ''
 })
 
@@ -54,11 +55,13 @@ onMounted(async () => {
         <el-menu-item index="/scoring">权重与评分</el-menu-item>
         <el-menu-item index="/map">营位地图</el-menu-item>
         <el-menu-item index="/veto">风险否决</el-menu-item>
+        <el-menu-item index="/closures">封营台账</el-menu-item>
       </el-menu>
       <div class="app-aside">
         <el-tag type="info" effect="plain" size="small">{{ mapModeText }}</el-tag>
         <span class="app-stat">
-          营位 {{ siteStore.total }} · 方案 {{ profileStore.total }} · 否决 {{ uiStore.vetoTotal }}
+          营位 {{ siteStore.total }} · 方案 {{ profileStore.total }} · 否决 {{ uiStore.vetoTotal }} ·
+          封营 {{ siteStore.closedCount }}
         </span>
       </div>
     </el-header>
