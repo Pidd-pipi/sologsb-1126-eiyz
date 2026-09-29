@@ -20,8 +20,9 @@ const siteStore = useSiteStore()
 const profileStore = useProfileStore()
 const uiStore = useUiStore()
 
-const { scoreOf } = useRanking({
-  sites: () => siteStore.list,
+const { scoreOf, referenceScoreOf } = useRanking({
+  sites: () => siteStore.openSites,
+  referenceSites: () => siteStore.list,
   factorOf: (id: number) => siteStore.latestFactor(id),
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
@@ -45,7 +46,8 @@ const siteOptions = computed(() =>
     .map((s) => ({
       value: s.id,
       label: `${s.code} · ${s.name}（${s.campName}）`,
-      vetoed: uiStore.isVetoed(s.id)
+      vetoed: uiStore.isVetoed(s.id),
+      closed: siteStore.closedSiteIds.includes(s.id)
     }))
 )
 
@@ -54,7 +56,7 @@ const selectedSite = computed(() =>
 )
 
 const selectedRow = computed(() =>
-  form.siteId == null ? null : scoreOf(form.siteId)
+  form.siteId == null ? null : scoreOf(form.siteId) ?? referenceScoreOf(form.siteId)
 )
 
 const selectedVetos = computed(() => uiStore.vetosOf(form.siteId))
@@ -64,12 +66,13 @@ const vetoLedger = computed(() =>
   uiStore.vetos
     .map((v) => {
       const site = siteStore.byId(v.siteId)
-      const row = scoreOf(v.siteId)
+      const row = scoreOf(v.siteId) ?? referenceScoreOf(v.siteId)
       return {
         ...v,
         siteCode: site?.code ?? '—',
         siteName: site?.name ?? '营位已删除',
         campName: site?.campName ?? '—',
+        closed: siteStore.closedSiteIds.includes(v.siteId),
         grade: row?.grade ?? 'C',
         total: row?.total ?? 0
       }
@@ -164,7 +167,10 @@ function focusSite(id: number | undefined): void {
                 :value="opt.value"
               >
                 <span>{{ opt.label }}</span>
-                <el-tag v-if="opt.vetoed" type="danger" size="small" style="float: right">
+                <el-tag v-if="opt.closed" type="warning" size="small" style="float: right; margin-left: 6px">
+                  封营中
+                </el-tag>
+                <el-tag v-else-if="opt.vetoed" type="danger" size="small" style="float: right">
                   已否决
                 </el-tag>
               </el-option>
@@ -285,6 +291,7 @@ function focusSite(id: number | undefined): void {
             <el-link type="primary" underline="never" @click="focusSite(row.siteId)">
               {{ row.siteCode }} · {{ row.siteName }}
             </el-link>
+            <el-tag v-if="row.closed" type="warning" size="small" class="ml6">封营中</el-tag>
             <div class="cell-sub">{{ row.campName }}</div>
           </template>
         </el-table-column>
@@ -369,5 +376,8 @@ function focusSite(id: number | undefined): void {
 }
 .mr6 {
   margin-right: 6px;
+}
+.ml6 {
+  margin-left: 6px;
 }
 </style>

@@ -24,6 +24,7 @@ const uiStore = useUiStore()
 
 const inputSites = computed(() =>
   siteStore.list.filter((site) => {
+    if (siteStore.closedSiteIds.includes(site.id as number)) return false
     if (uiStore.filterCamp && site.campName !== uiStore.filterCamp) return false
     if (uiStore.filterSurface && site.surface !== uiStore.filterSurface) return false
     if (uiStore.filterAccess && site.access !== uiStore.filterAccess) return false
@@ -35,6 +36,8 @@ const inputSites = computed(() =>
     return true
   })
 )
+
+const closedCount = computed(() => siteStore.closedSiteIds.length)
 
 const { ranked } = useRanking({
   sites: () => inputSites.value,
@@ -99,11 +102,27 @@ function openDetail(siteId: number | undefined): void {
       </div>
     </div>
 
+    <el-alert
+      v-if="closedCount"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="closed-alert"
+      :title="`${closedCount} 个营位封营中，已暂不参与当前推荐、最高分与等级统计`"
+    >
+      <template #default>
+        营位的得分、因子与否决记录均已保留，可在封营管理中单独查看。
+        <el-button size="small" text type="primary" @click="router.push('/closures')">前往封营管理</el-button>
+      </template>
+    </el-alert>
+
     <div class="stat-row">
       <div class="stat-card">
         <div class="stat-card__label">候选营位</div>
         <div class="stat-card__value" data-testid="stat-total">{{ stats.total }}</div>
-        <div class="stat-card__extra">共 {{ siteStore.total }} 个已登记</div>
+        <div class="stat-card__extra">
+          共 {{ siteStore.total }} 个已登记<span v-if="closedCount"> · {{ closedCount }} 个封营中</span>
+        </div>
       </div>
       <div class="stat-card">
         <div class="stat-card__label">A 级推荐</div>
@@ -267,6 +286,9 @@ function openDetail(siteId: number | undefined): void {
 </template>
 
 <style scoped>
+.closed-alert {
+  margin-bottom: 12px;
+}
 .rank-no {
   display: inline-flex;
   align-items: center;

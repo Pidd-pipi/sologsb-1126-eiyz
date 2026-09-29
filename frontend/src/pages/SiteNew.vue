@@ -322,6 +322,7 @@ async function submit(): Promise<void> {
     <MapPanel
       :sites="siteStore.list"
       :selected-id="null"
+      :closed-ids="() => siteStore.closedSiteIds"
       mode="pick"
       height="380px"
       title="候选营位分布（点选拾取经纬度）"

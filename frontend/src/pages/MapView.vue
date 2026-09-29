@@ -33,15 +33,16 @@ const filterSurface = ref<string>('')
 const gradeFilter = ref<string>('')
 const selectedId = ref<number | null>(null)
 
+/** 地图只显示在营营位；封营中的营位不进标记与等级统计 */
 const visibleSites = computed(() =>
-  siteStore.list.filter((s) => {
+  siteStore.openSites.filter((s) => {
     if (filterSurface.value && s.surface !== filterSurface.value) return false
     return true
   })
 )
 
 const { ranked, scoreOf } = useRanking({
-  sites: () => siteStore.list,
+  sites: () => siteStore.openSites,
   factorOf: (id: number) => siteStore.latestFactor(id),
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
@@ -138,11 +139,32 @@ const gradeStats = computed(() => {
       "
     />
 
+    <el-alert
+      v-if="siteStore.closedSiteIds.length"
+      type="warning"
+      show-icon
+      :closable="false"
+      style="margin-top: 12px"
+      :title="`${siteStore.closedSiteIds.length} 个营位封营中，地图标记与等级统计暂不显示`"
+    >
+      <template #default>
+        封营资料仍保留，可单独查看原来的得分、因子与否决记录。
+        <el-button size="small" text type="primary" @click="router.push('/closures')">前往封营管理</el-button>
+      </template>
+    </el-alert>
+
     <div class="stat-row">
       <div v-for="g in gradeStats" :key="g.grade" class="stat-card">
         <div class="stat-card__label">{{ g.grade }} 级营位</div>
         <div class="stat-card__value" :style="{ color: g.color }">{{ g.count }}</div>
         <div class="stat-card__extra">共 {{ ranked.length }} 个候选营位</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card__label">封营中</div>
+        <div class="stat-card__value" :style="{ color: siteStore.closedSiteIds.length ? '#d97706' : undefined }">
+          {{ siteStore.closedSiteIds.length }}
+        </div>
+        <div class="stat-card__extra">不计入等级统计</div>
       </div>
       <div class="stat-card">
         <div class="stat-card__label">否决标记</div>
@@ -158,7 +180,7 @@ const gradeStats = computed(() => {
         <h2>筛选显示</h2>
         <span class="weight-note">
           {{ hasKey ? 'key 已配置' : 'key 未配置（降级视图）' }} · 当前显示
-          {{ panelSites.length }} / {{ siteStore.total }} 个营位
+          {{ panelSites.length }} / {{ siteStore.openSites.length }} 个在营营位
         </span>
       </div>
       <div class="filters">

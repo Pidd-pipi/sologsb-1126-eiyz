@@ -52,13 +52,15 @@ watch(
 )
 
 const { ranked, best } = useRanking({
-  sites: () => siteStore.list,
+  sites: () => siteStore.openSites,
   factorOf: (id: number) => siteStore.latestFactor(id),
   weights: () => uiStore.workingWeights,
   normalize: () => uiStore.workingNormalize,
   thresholds: () => uiStore.workingThresholds,
   vetoedIds: () => uiStore.vetoedSiteIds
 })
+
+const closedCount = computed(() => siteStore.closedSiteIds.length)
 
 const totalWeight = computed(() => weightSum(uiStore.workingWeights))
 
@@ -316,10 +318,21 @@ async function removeProfileRow(id: number | undefined): Promise<void> {
       </div>
     </section>
 
+    <el-alert
+      v-if="closedCount"
+      type="warning"
+      :closable="false"
+      show-icon
+      style="margin-bottom: 12px"
+      :title="`${closedCount} 个营位封营中，当前实时名次与等级分布不含这些营位；恢复后立即按本方案参与排名。`"
+    />
+
     <section class="panel">
       <div class="panel__head">
         <h2>实时名次（跟随权重刷新）</h2>
-        <span class="weight-note">共 {{ ranked.length }} 个营位</span>
+        <span class="weight-note">
+          共 {{ ranked.length }} 个在营营位<template v-if="closedCount"> · {{ closedCount }} 个封营中</template>
+        </span>
       </div>
       <el-table :data="ranked" size="small" border stripe>
         <el-table-column label="名次" width="72" align="center">

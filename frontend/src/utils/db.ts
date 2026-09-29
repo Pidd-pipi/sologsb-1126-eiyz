@@ -5,6 +5,7 @@
  *   v1 建 sites / factors 两张表
  *   v2 新增 profiles 表，并为 factors 补 siteId 索引
  *   v3 新增 vetos 表，并为存量营位回填默认权重方案
+ *   v4 新增 closures（封营记录）表：封营期间退出推荐，恢复后立即回归
  */
 import Dexie, { type Table } from 'dexie'
 import type { Campsite } from '@/types/campsite'
@@ -12,16 +13,18 @@ import type { FactorAssessment } from '@/types/factor'
 import type { ScoreProfile } from '@/types/score'
 import { DEFAULT_WEIGHTS } from '@/types/score'
 import type { RiskVeto } from '@/types/veto'
+import type { SiteClosure } from '@/types/closure'
 
 export const DB_NAME = 'gbcampsite-db'
 /** 当前数据结构版本号 */
-export const DB_VERSION = 3
+export const DB_VERSION = 4
 
 export class GbCampsiteDatabase extends Dexie {
   sites!: Table<Campsite, number>
   factors!: Table<FactorAssessment, number>
   profiles!: Table<ScoreProfile, number>
   vetos!: Table<RiskVeto, number>
+  closures!: Table<SiteClosure, number>
 
   constructor() {
     super(DB_NAME)
@@ -53,7 +56,7 @@ export class GbCampsiteDatabase extends Dexie {
       })
 
     // v3：新增风险否决表；为存量营位回填默认方案 id 与新增字段缺省值
-    this.version(DB_VERSION)
+    this.version(3)
       .stores({
         sites: '++id, code, name, campName, surface, access, defaultProfileId, updatedAt',
         factors: '++id, siteId, assessedAt, assessor',
@@ -74,6 +77,15 @@ export class GbCampsiteDatabase extends Dexie {
             if (typeof s.tentCapacity !== 'number') s.tentCapacity = 1
           })
       })
+
+    // v4：新增封营记录表；存量营位无封营记录即默认在营（旧数据升级默认开放），只补表结构。
+    this.version(DB_VERSION).stores({
+      sites: '++id, code, name, campName, surface, access, defaultProfileId, updatedAt',
+      factors: '++id, siteId, assessedAt, assessor',
+      profiles: '++id, name, season, active, updatedAt',
+      vetos: '++id, siteId, type, judgedAt',
+      closures: '++id, siteId, closedAt, reopened, plannedReopenDate'
+    })
   }
 }
 
@@ -369,14 +381,58 @@ function seedVetos(): RiskVeto[] {
   ]
 }
 
+function seedClosures(): SiteClosure[] {
+  return [
+    {
+      id: 1,
+      siteId: 6,
+      reasonType: '雨季封营',
+      reason: '上游连日降雨、河道水位上涨，F 区沙地临近常水位，雨季期间暂停扎营。',
+      operator: '李营',
+      closedAt: '2026-09-25',
+      plannedReopenDate: '2026-10-08',
+      reopened: false,
+      reopenedAt: '',
+      reopenOperator: '',
+      reopenNote: '',
+      createdAt: SEED_TS,
+      updatedAt: SEED_TS
+    },
+    {
+      id: 2,
+      siteId: 2,
+      reasonType: '护坡检修',
+      reason: 'B 区上方松林边坡例行加固，检修期间落枝风险升高。',
+      operator: '周勘',
+      closedAt: '2024-04-01',
+      plannedReopenDate: '2024-04-09',
+      reopened: true,
+      reopenedAt: '2024-04-07',
+      reopenOperator: '李营',
+      reopenNote: '护坡提前完工，现场复核无落枝，提前两天恢复。',
+      createdAt: SEED_TS,
+      updatedAt: SEED_TS
+    }
+  ]
+}
+
 /** 首次运行写入样例数据，保证每个页面首屏都有可评估的内容。 */
 export async function seedIfEmpty(): Promise<void> {
   const count = await db.sites.count()
   if (count > 0) return
-  await db.transaction('rw', db.sites, db.factors, db.profiles, db.vetos, async () => {
-    await db.profiles.bulkPut(seedProfiles())
-    await db.sites.bulkPut(seedSites())
-    await db.factors.bulkPut(seedFactors())
-    await db.vetos.bulkPut(seedVetos())
-  })
+  await db.transaction(
+    'rw',
+    db.sites,
+    db.factors,
+    db.profiles,
+    db.vetos,
+    db.closures,
+    async () => {
+      await db.profiles.bulkPut(seedProfiles())
+      await db.sites.bulkPut(seedSites())
+      await db.factors.bulkPut(seedFactors())
+      await db.vetos.bulkPut(seedVetos())
+      await db.closures.bulkPut(seedClosures())
+    }
+  )
 }

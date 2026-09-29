@@ -21,6 +21,8 @@ const props = withDefaults(
     selectedId?: number | null
     /** 每个营位的等级，用于着色 */
     gradeOf?: (siteId: number) => Grade
+    /** 封营中的营位 id 集合：标记置灰并打「封」角标 */
+    closedIds?: () => number[]
     /** pick 模式下点击空白处会抛出经纬度（用于选点登记） */
     mode?: 'view' | 'pick'
     /** 地图高度 */
@@ -31,6 +33,7 @@ const props = withDefaults(
   {
     selectedId: null,
     gradeOf: undefined,
+    closedIds: undefined,
     mode: 'view',
     height: '420px',
     title: '营位分布'
@@ -55,13 +58,22 @@ let markers: AmapMarker[] = []
 
 const bounds = computed(() => boundsOf(props.sites.map((s) => ({ lng: s.lng, lat: s.lat }))))
 
-const points = computed(() =>
-  props.sites.map((site) => {
+const points = computed(() => {
+  const closedSet = new Set(props.closedIds?.() ?? [])
+  return props.sites.map((site) => {
     const pt = projectToGrid({ lng: site.lng, lat: site.lat }, bounds.value, GRID_W, GRID_H)
+    const closed = typeof site.id === 'number' && closedSet.has(site.id)
     const grade: Grade = props.gradeOf ? props.gradeOf(site.id ?? -1) : 'C'
-    return { site, x: pt.x, y: pt.y, color: GRADE_COLOR[grade], grade }
+    return {
+      site,
+      x: pt.x,
+      y: pt.y,
+      color: closed ? '#8a9a8f' : GRADE_COLOR[grade],
+      grade,
+      closed
+    }
   })
-)
+})
 
 const activeSite = computed(
   () => props.sites.find((s) => s.id === props.selectedId) ?? null
@@ -109,8 +121,8 @@ function renderAmapMarkers(): void {
   for (const item of points.value) {
     const marker = new ns.Marker({
       position: [item.site.lng, item.site.lat],
-      title: `${item.site.code} ${item.site.name}`,
-      content: `<div class="gb-amap-pin" style="--pin:${item.color}"><span>${item.site.code.slice(-2)}</span><em>${item.grade}</em></div>`,
+      title: `${item.site.code} ${item.site.name}${item.closed ? '（封营中）' : ''}`,
+      content: `<div class="gb-amap-pin${item.closed ? ' gb-amap-pin--closed' : ''}" style="--pin:${item.color}"><span>${item.closed ? '封' : item.site.code.slice(-2)}</span><em>${item.closed ? '封' : item.grade}</em></div>`,
       offset: new ns.Pixel(-16, -16)
     })
     marker.on('click', () => emit('select', item.site.id as number))
@@ -160,7 +172,9 @@ watch(
 )
 
 watch(
-  () => props.sites.map((s) => `${s.id}:${s.lng}:${s.lat}`).join('|'),
+  () =>
+    props.sites.map((s) => `${s.id}:${s.lng}:${s.lat}`).join('|') +
+    `#closed=${(props.closedIds?.() ?? []).join(',')}`,
   () => {
     if (amap.value && !degraded.value) renderAmapMarkers()
   }
@@ -246,16 +260,16 @@ onBeforeUnmount(() => {
           v-for="pt in points"
           :key="`pt-${pt.site.id}`"
           class="map-panel__node"
-          :class="{ 'is-active': pt.site.id === selectedId }"
+          :class="{ 'is-active': pt.site.id === selectedId, 'is-closed': pt.closed }"
           tabindex="0"
           role="button"
-          :aria-label="`${pt.site.code} ${pt.site.name}`"
+          :aria-label="`${pt.site.code} ${pt.site.name}${pt.closed ? '（封营中）' : ''}`"
           @click.stop="emit('select', pt.site.id as number)"
         >
-          <circle :cx="pt.x" :cy="pt.y" r="16" :fill="pt.color" opacity="0.16" />
+          <circle :cx="pt.x" :cy="pt.y" r="16" :fill="pt.color" :opacity="pt.closed ? 0.12 : 0.16" />
           <circle :cx="pt.x" :cy="pt.y" r="9" :fill="pt.color" stroke="#ffffff" stroke-width="2" />
           <text :x="pt.x" :y="pt.y + 3.5" text-anchor="middle" class="map-panel__nodeText">
-            {{ pt.grade }}
+            {{ pt.closed ? '封' : pt.grade }}
           </text>
           <text :x="pt.x + 14" :y="pt.y - 10" class="map-panel__nodeLabel">
             {{ pt.site.code }}
@@ -376,6 +390,9 @@ onBeforeUnmount(() => {
 .map-panel__node.is-active circle:nth-child(2) {
   stroke: #14532d;
   stroke-width: 3;
+}
+.map-panel__node.is-closed .map-panel__nodeLabel {
+  fill: #8a9a8f;
 }
 .map-panel__legend {
   position: absolute;
@@ -504,5 +521,9 @@ onBeforeUnmount(() => {
   font-size: 10px;
   padding: 0 3px;
   border: 1px solid var(--pin, #15803d);
+}
+.gb-amap-pin--closed {
+  border-style: dashed;
+  opacity: 0.92;
 }
 </style>

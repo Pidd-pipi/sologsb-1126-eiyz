@@ -10,6 +10,7 @@ import MapPanel from '@/components/common/MapPanel.vue'
 import FactorScoreBar from '@/components/common/FactorScoreBar.vue'
 import GradeBadge from '@/components/common/GradeBadge.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import ClosureDialog from '@/components/common/ClosureDialog.vue'
 import { useSiteStore } from '@/stores/siteStore'
 import { useProfileStore } from '@/stores/profileStore'
 import { useUiStore } from '@/stores/uiStore'
@@ -22,6 +23,12 @@ import type { RockfallRisk, WindDir, WindForce } from '@/types/factor'
 import { ROCKFALL_RISKS, WIND_DIRS, WIND_FORCES } from '@/types/factor'
 import { VETO_TYPES, VETO_HINTS } from '@/types/veto'
 import type { VetoType } from '@/types/veto'
+import {
+  CLOSURE_STATE_META,
+  closureStateOf,
+  daysBetween
+} from '@/types/closure'
+import type { ClosureReasonType, SiteClosure } from '@/types/closure'
 import { formatDate, formatDateTime, todayIso } from '@/utils/format'
 import { formatLat, formatLng } from '@/utils/geo'
 
@@ -34,8 +41,31 @@ const uiStore = useUiStore()
 const siteId = computed(() => Number(route.params.id))
 const site = computed(() => siteStore.byId(siteId.value))
 
-const { scoreOf } = useRanking({
-  sites: () => siteStore.list,
+/** 当前生效的封营记录（未恢复，含逾期） */
+const activeClosure = computed<SiteClosure | null>(() =>
+  siteId.value == null ? null : siteStore.activeClosureOf(siteId.value)
+)
+const isClosed = computed(() => activeClosure.value !== null)
+const closureState = computed(() =>
+  activeClosure.value ? closureStateOf(activeClosure.value, todayIso()) : null
+)
+const closureHistory = computed(() => siteStore.closuresOf(siteId.value))
+/** 距离计划恢复日期：负数=已逾期、0=今天到期、正数=剩余天数 */
+const reopenDayDelta = computed(() =>
+  activeClosure.value ? daysBetween(todayIso(), activeClosure.value.plannedReopenDate) : 0
+)
+
+/**
+ * 名次：参与集合始终是在营营位（封营者不进排名/最高分/等级统计）；
+ * 若当前营位被封，则把它追加进参考全集，单独算「原得分」，仅供本页查看。
+ */
+const { scoreOf, referenceScoreOf } = useRanking({
+  sites: () => siteStore.openSites,
+  referenceSites: () => {
+    const cur = site.value
+    if (!cur || !isClosed.value) return siteStore.openSites
+    return siteStore.openSites.some((s) => s.id === cur.id) ? siteStore.openSites : [...siteStore.openSites, cur]
+  },
   factorOf: (id: number) => siteStore.latestFactor(id),
   weights: () => profileStore.activeWeights,
   normalize: () => profileStore.activeProfile?.normalize ?? 'minmax',
@@ -43,12 +73,22 @@ const { scoreOf } = useRanking({
   vetoedIds: () => uiStore.vetoedSiteIds
 })
 
-const scoreRow = computed(() => scoreOf(siteId.value))
+/** 详情页展示的得分行：在营时就是当前名次；封营时是参考全集里的原得分（不计名次）。 */
+const scoreRow = computed(() =>
+  isClosed.value ? referenceScoreOf(siteId.value) : scoreOf(siteId.value)
+)
 
 /** 供 MapPanel 与地图标记回调使用（避免在模板里写带类型标注的箭头函数） */
 function gradeOfSite(id: number): Grade {
-  return scoreOf(id)?.grade ?? 'C'
+  return scoreOf(id)?.grade ?? referenceScoreOf(id)?.grade ?? 'C'
 }
+
+/** 详情定位图：在营营位 + 当前营位自身（即便它封营，也要能看到自己的定位） */
+const mapSites = computed(() => {
+  const cur = site.value
+  if (!cur) return siteStore.openSites
+  return siteStore.openSites.some((s) => s.id === cur.id) ? siteStore.openSites : [...siteStore.openSites, cur]
+})
 
 function openSite(id: number): void {
   void router.push(`/sites/${id}`)
@@ -56,6 +96,66 @@ function openSite(id: number): void {
 const grade = computed(() => scoreRow.value?.grade ?? 'C')
 const factorHistory = computed(() => siteStore.factorsOf(siteId.value))
 const vetoList = computed(() => uiStore.vetosOf(siteId.value))
+
+/* ------------------------------- 封营 / 恢复 ------------------------------- */
+const closureDialogVisible = ref(false)
+const closureDialogMode = ref<'close' | 'reopen'>('close')
+
+function openCloseDialog(): void {
+  closureDialogMode.value = 'close'
+  closureDialogVisible.value = true
+}
+
+function openReopenDialog(): void {
+  if (!activeClosure.value) return
+  closureDialogMode.value = 'reopen'
+  closureDialogVisible.value = true
+}
+
+async function onClosureSubmit(payload: unknown): Promise<void> {
+  const p = payload as
+    | {
+        kind: 'close'
+        siteId: number
+        reasonType: ClosureReasonType
+        reason: string
+        operator: string
+        closedAt: string
+        plannedReopenDate: string
+      }
+    | { kind: 'reopen'; closureId: number; reopenedAt: string; operator: string; note: string }
+  try {
+    if (p.kind === 'close') {
+      await siteStore.closeSite(p)
+      ElMessage.success('已封营：名次表与地图立即排除该营位，资料仍可在本页与封营管理查看')
+    } else {
+      await siteStore.reopenSite(p.closureId, {
+        reopenedAt: p.reopenedAt,
+        operator: p.operator,
+        note: p.note
+      })
+      ElMessage.success('已恢复营位，立即按当前方案参与名次表与地图排名')
+    }
+  } catch (err) {
+    ElMessage.error(`操作失败：${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+async function removeSitePermanently(): Promise<void> {
+  if (!site.value || typeof site.value.id !== 'number') return
+  try {
+    await ElMessageBox.confirm(
+      `确认彻底删除营位「${site.value.code} ${site.value.name}」？其因子、否决与封营资料会一并清除，且无法恢复。`,
+      '删除营位',
+      { type: 'warning', confirmButtonText: '彻底删除', cancelButtonText: '再想想' }
+    )
+  } catch {
+    return
+  }
+  await siteStore.removeSite(site.value.id)
+  ElMessage.success('营位及其封营资料已一并清除')
+  void router.push('/')
+}
 
 /* --------------------------- 多轮因子复核录入 --------------------------- */
 const showFactorForm = ref(false)
@@ -227,6 +327,7 @@ watch(
   () => {
     showFactorForm.value = false
     editing.value = false
+    closureDialogVisible.value = false
     prefillFactor()
   },
   { immediate: true }
@@ -246,9 +347,60 @@ watch(
       <div class="page-actions">
         <el-button @click="router.push('/')">返回名次表</el-button>
         <el-button @click="router.push('/map')">地图视图</el-button>
-        <el-button type="primary" @click="startEdit">编辑基础信息</el-button>
+        <el-button type="primary" :disabled="isClosed" @click="startEdit">编辑基础信息</el-button>
+        <el-button
+          v-if="!isClosed"
+          type="warning"
+          plain
+          data-testid="close-site-btn"
+          @click="openCloseDialog"
+        >
+          封营
+        </el-button>
+        <el-button
+          v-else
+          type="success"
+          plain
+          data-testid="reopen-site-btn"
+          @click="openReopenDialog"
+        >
+          {{ closureState === 'overdue' ? '补恢复' : '提前恢复' }}
+        </el-button>
       </div>
     </div>
+
+    <el-alert
+      v-if="isClosed && activeClosure"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="closure-alert"
+      :title="`该营位${closureState === 'overdue' ? '已超过计划恢复日期，处于逾期封营状态' : '封营中'}，暂不参与名次表、地图推荐、最高分与等级统计`"
+    >
+      <template #default>
+        <div class="closure-alert__body">
+          <p>
+            <el-tag type="warning" size="small">{{ activeClosure.reasonType }}</el-tag>
+            <span class="ml8">{{ activeClosure.reason }}</span>
+          </p>
+          <p class="muted">
+            封营日期 {{ formatDate(activeClosure.closedAt) }} · 计划恢复
+            {{ formatDate(activeClosure.plannedReopenDate) }}
+            <template v-if="reopenDayDelta > 0">（剩 {{ reopenDayDelta }} 天）</template>
+            <template v-else-if="reopenDayDelta === 0">（今天到期）</template>
+            <template v-else>（已逾期 {{ -reopenDayDelta }} 天）</template>
+            · 操作人 {{ activeClosure.operator }}
+          </p>
+          <p class="muted">
+            得分、因子与否决记录原样保留（下方案列为封营前的参考数据）；恢复后立即按当前方案参与排名。
+            <el-button size="small" text type="success" @click="openReopenDialog">
+              {{ closureState === 'overdue' ? '立即补恢复' : '提前恢复' }}
+            </el-button>
+            <el-button size="small" text @click="removeSitePermanently">营位已不存在？删除并清掉封营资料</el-button>
+          </p>
+        </div>
+      </template>
+    </el-alert>
 
     <el-alert
       v-if="vetoList.length"
@@ -260,26 +412,35 @@ watch(
     />
 
     <MapPanel
-      :sites="siteStore.list"
+      :sites="mapSites"
       :selected-id="siteId"
       :grade-of="gradeOfSite"
+      :closed-ids="() => siteStore.closedSiteIds"
       height="360px"
-      :title="`营位定位 · ${site.code}`"
+      :title="`营位定位 · ${site.code}${isClosed ? '（封营中）' : ''}`"
       @select="openSite"
     />
 
     <div class="stat-row">
-      <div class="stat-card">
-        <div class="stat-card__label">综合得分</div>
+      <div class="stat-card" :class="{ 'stat-card--closed': isClosed }">
+        <div class="stat-card__label">{{ isClosed ? '参考综合得分' : '综合得分' }}</div>
         <div class="stat-card__value">{{ scoreRow?.total ?? '—' }}</div>
-        <div class="stat-card__extra">方案 {{ profileStore.activeProfile?.name ?? '—' }}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-card__label">推荐等级</div>
-        <div class="stat-card__value">
-          <GradeBadge :grade="grade" size="large" :vetoed="vetoList.length > 0" />
+        <div class="stat-card__extra">
+          方案 {{ profileStore.activeProfile?.name ?? '—' }}
+          <template v-if="isClosed"> · 封营中不计排名</template>
         </div>
-        <div class="stat-card__extra">名次第 {{ scoreRow?.rank ?? '—' }} 位</div>
+      </div>
+      <div class="stat-card" :class="{ 'stat-card--closed': isClosed }">
+        <div class="stat-card__label">{{ isClosed ? '原推荐等级' : '推荐等级' }}</div>
+        <div class="stat-card__value">
+          <GradeBadge :grade="grade" size="large" :vetoed="vetoList.length > 0" :show-label="false" />
+          <el-tag v-if="isClosed" type="warning" size="small" class="ml8">
+            {{ closureState ? CLOSURE_STATE_META[closureState].label : '封营中' }}
+          </el-tag>
+        </div>
+        <div class="stat-card__extra">
+          {{ isClosed ? '恢复后立即重新计名次' : `名次第 ${scoreRow?.rank ?? '—'} 位` }}
+        </div>
       </div>
       <div class="stat-card">
         <div class="stat-card__label">坐标</div>
@@ -289,7 +450,9 @@ watch(
       <div class="stat-card">
         <div class="stat-card__label">评估轮次</div>
         <div class="stat-card__value">{{ factorHistory.length }}</div>
-        <div class="stat-card__extra">否决项 {{ vetoList.length }} 条</div>
+        <div class="stat-card__extra">
+          否决项 {{ vetoList.length }} 条 · 封营 {{ closureHistory.length }} 次
+        </div>
       </div>
     </div>
 
@@ -399,6 +562,7 @@ watch(
       <p class="panel__hint">
         当前名次所用因子来自最新一轮评估（{{ siteStore.latestFactor(siteId)?.assessedAt ?? '暂无' }}，
         评估人 {{ siteStore.latestFactor(siteId)?.assessor ?? '—' }}）。
+        <template v-if="isClosed">该营位封营中，下列得分为当前方案下的参考得分，不计入名次与统计。</template>
       </p>
     </section>
 
@@ -616,6 +780,70 @@ watch(
         </el-form-item>
       </el-form>
     </section>
+
+    <section class="panel">
+      <div class="panel__head">
+        <h2>封营记录</h2>
+        <div>
+          <el-tag v-if="isClosed && closureState" :type="CLOSURE_STATE_META[closureState].tagType" size="small">
+            {{ CLOSURE_STATE_META[closureState].label }}
+          </el-tag>
+          <el-button
+            v-if="isClosed"
+            size="small"
+            type="success"
+            plain
+            style="margin-left: 8px"
+            @click="openReopenDialog"
+          >
+            {{ closureState === 'overdue' ? '补恢复' : '提前恢复' }}
+          </el-button>
+          <el-button v-else size="small" type="warning" plain style="margin-left: 8px" @click="openCloseDialog">
+            封营
+          </el-button>
+        </div>
+      </div>
+
+      <el-table v-if="closureHistory.length" :data="closureHistory" size="small" border>
+        <el-table-column label="状态" width="124">
+          <template #default="{ row }">
+            <el-tag :type="CLOSURE_STATE_META[closureStateOf(row, todayIso())].tagType" size="small">
+              {{ CLOSURE_STATE_META[closureStateOf(row, todayIso())].label }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="原因" min-width="220">
+          <template #default="{ row }">
+            <el-tag size="small" effect="plain">{{ row.reasonType }}</el-tag>
+            <span class="ml8">{{ row.reason }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="封营日期" width="112">
+          <template #default="{ row }">{{ formatDate(row.closedAt) }}</template>
+        </el-table-column>
+        <el-table-column label="计划恢复" width="112">
+          <template #default="{ row }">{{ formatDate(row.plannedReopenDate) }}</template>
+        </el-table-column>
+        <el-table-column label="实际恢复" width="112">
+          <template #default="{ row }">{{ row.reopened ? formatDate(row.reopenedAt) : '—' }}</template>
+        </el-table-column>
+        <el-table-column label="操作人" width="96">
+          <template #default="{ row }">{{ row.reopened ? row.reopenOperator : row.operator }}</template>
+        </el-table-column>
+        <el-table-column label="恢复备注" min-width="180">
+          <template #default="{ row }">{{ row.reopenNote || '—' }}</template>
+        </el-table-column>
+      </el-table>
+      <p v-else class="panel__hint">该营位暂无封营记录。需要临时封闭（雨季、护坡检修等）时，点击右上角「封营」填写原因与计划恢复日期。</p>
+    </section>
+
+    <ClosureDialog
+      v-model="closureDialogVisible"
+      :mode="closureDialogMode"
+      :site="site"
+      :closure="activeClosure"
+      @submit="onClosureSubmit"
+    />
   </div>
 
   <div v-else class="page">
@@ -646,5 +874,22 @@ watch(
 }
 .review-form {
   margin-bottom: 12px;
+}
+.closure-alert {
+  margin: 12px 0;
+}
+.closure-alert__body p {
+  margin: 4px 0;
+}
+.closure-alert__body .muted {
+  font-size: 12px;
+  color: var(--gb-muted);
+}
+.stat-card--closed {
+  outline: 2px dashed #f0c674;
+  outline-offset: -2px;
+}
+.ml8 {
+  margin-left: 8px;
 }
 </style>
